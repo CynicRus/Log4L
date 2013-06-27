@@ -1,4 +1,4 @@
-unit l4l_const;
+unit log4l_const;
 
 {$mode objfpc}{$H+}
 
@@ -7,7 +7,6 @@ interface
 uses
   Classes, SysUtils;
 const
-  Log4Lazarus = '1.0';
 
   { Default pattern string for log output.
     Shows the application supplied message. }
