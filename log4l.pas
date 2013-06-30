@@ -31,7 +31,7 @@ unit log4l;
 interface
 
 uses
-  Classes,SysUtils,SyncObjs, Contnrs, l4l_const;
+  Classes,SysUtils,SyncObjs, Contnrs, log4l_const;
 
 const
   l4lVersion = '1.1';
@@ -111,10 +111,6 @@ type
 {$IFDEF DELPHI4}
   TClassList  = TList;
   TObjectList = TList;
-{$ENDIF}
-
-{$IFDEF LINUX}
-  TRTLCriticalSection = TCriticalSection;
 {$ENDIF}
 
   { Log-specific exceptions. }
@@ -1010,11 +1006,6 @@ function FindEncodingFromName(const Name: string): TEncoding;
 {$ENDIF UNICODE}
 
 {$IFDEF LINUX}
-procedure EnterCriticalSection(var CS: TCriticalSection);
-procedure LeaveCriticalSection(var CS: TCriticalSection);
-procedure InitializeCriticalSection(var CS: TCriticalSection);
-procedure DeleteCriticalSection(var CS: TCriticalSection);
-function GetCurrentThreadID: Integer;
 procedure OutputDebugString(const S: PChar);
 {$ENDIF}
 
@@ -2635,6 +2626,7 @@ constructor TLogCustomAppender.Create(const Name: string;
   const Layout: ILogLayout);
 begin
   inherited Create;
+//  InitCriticalSection(FCriticalAppender);
   FName := Name;
   if Layout <> nil then
     FLayout := Layout
@@ -2647,7 +2639,7 @@ destructor TLogCustomAppender.Destroy;
 begin
   Close;
   FFilters.Free;
-  LeaveCriticalSection(FCriticalAppender);
+//  LeaveCriticalSection(FCriticalAppender);
   inherited Destroy;
 end;
 
@@ -3886,31 +3878,6 @@ begin
 end;
 
 {$IFDEF LINUX}
-procedure EnterCriticalSection(var CS: TCriticalSection);
-begin
-  CS.Enter;
-end;
-
-procedure LeaveCriticalSection(var CS: TCriticalSection);
-begin
-  CS.Leave;
-end;
-
-procedure InitializeCriticalSection(var CS: TCriticalSection);
-begin
-  CS := TCriticalSection.Create;
-end;
-
-procedure DeleteCriticalSection(var CS: TCriticalSection);
-begin
-  CS.Free;
-end;
-
-function GetCurrentThreadID: Integer;
-begin
-  Result := 0;
-end;
-
 procedure OutputDebugString(const S: PChar);
 begin
   WriteLn(Trim(string(S)));
@@ -4022,4 +3989,4 @@ finalization
   { Synchronisation. }
   LeaveCriticalSection(CriticalNDC);
 
-end.
+end.
