@@ -31,7 +31,7 @@ unit log4l;
 interface
 
 uses
-  Classes,SysUtils,SyncObjs, Contnrs, log4l_const;
+  Classes,SysUtils,SyncObjs, Contnrs;
 
 const
   l4lVersion = '1.1';
@@ -2231,6 +2231,7 @@ begin
     'th {background: #336699; color: #FFFFFF; text-align: left;}' + CRLF +
     '-->' + CRLF +
     '</style>' + CRLF +
+    '<meta http-equiv="Content-Type" content="text/html; charset=utf-8">' + CRLF +
     '</head>' + CRLF +
     '<body bgcolor="#FFFFFF" topmargin="6" leftmargin="6">' + CRLF +
     '<hr size="1" noshade>' + CRLF +
@@ -3022,7 +3023,7 @@ begin
     // close file
     CloseLogFile;
     // Rename fileName to fileName.1
-    RenameFile(FFileName, FFileName + '.1');
+    RenameFile(FFileName, FFileName + '.1.html');
     // open new file
     SetLogFile(FFileName);
   end;
