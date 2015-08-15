@@ -1016,7 +1016,31 @@ var
   DefaultHierarchy: TLogHierarchy;
   { Internal package logging. }
   LogLog: TLogLog;
+  { Start time for the logging process - to compute elapsed time. }
+  StartTime: TDateTime;
+    { The nested diagnostic contexts (NDCs).
+    This list has one entry for each thread.
+    For each entry, the attached object is another string list
+    containing the actual context strings. }
+  NDC: TStringList;
+  { The controller for synchronisation }
+  CriticalNDC: TRTLCriticalSection;
+  Levels: TObjectList;
 
+  AppenderNames: TStringList;
+  AppenderClasses: TClassList;
+  LoggerFactoryNames: TStringList;
+  LoggerFactoryClasses: TClassList;
+  ErrorHandlerNames: TStringList;
+  ErrorHandlerClasses: TClassList;
+  LayoutNames: TStringList;
+  LayoutClasses: TClassList;
+  RenderedNames: TStringList;
+  RenderedClasses: TClassList;
+  RendererNames: TStringList;
+  RendererClasses: TClassList;
+  FilterNames: TStringList;
+  FilterClasses: TClassList;
 implementation
    uses lclproc;
 {$IFDEF UNICODE}
@@ -1078,9 +1102,6 @@ resourcestring
   TimeHdr                 = 'Time';
   ValueUnknownMsg         = 'Unknown';
 
-var
-  { Start time for the logging process - to compute elapsed time. }
-  StartTime: TDateTime;
 
 { TLogOptionHandler -----------------------------------------------------------}
 
@@ -1115,8 +1136,6 @@ end;
 
 { TLogLevel -------------------------------------------------------------------}
 
-var
-  Levels: TObjectList;
 
 { Accumulate a list (in descending order) of TLogLevel objects defined. }
 procedure RegisterLevel(Level: TLogLevel);
@@ -1204,15 +1223,6 @@ begin
 end;
 
 { TLogNDC ---------------------------------------------------------------------}
-
-var
-  { The nested diagnostic contexts (NDCs).
-    This list has one entry for each thread.
-    For each entry, the attached object is another string list
-    containing the actual context strings. }
-  NDC: TStringList;
-  { The controller for synchronisation }
-  CriticalNDC: TRTLCriticalSection;
 
 { Empty out the current NDC stack. }
 class procedure TLogNDC.Clear;
@@ -3746,10 +3756,6 @@ begin
   end;
 end;
 
-var
-  AppenderNames: TStringList;
-  AppenderClasses: TClassList;
-
 procedure RegisterAppender(const Appender: TClass);
 begin
   RegisterClass(Appender, ILogAppender, 'ILogAppender',
@@ -3762,9 +3768,6 @@ begin
     as ILogAppender;
 end;
 
-var
-  LoggerFactoryNames: TStringList;
-  LoggerFactoryClasses: TClassList;
 
 procedure RegisterLoggerFactory(const LoggerFactory: TClass);
 begin
@@ -3778,10 +3781,6 @@ begin
     LoggerFactoryNames, LoggerFactoryClasses) as ILogLoggerFactory;
 end;
 
-var
-  ErrorHandlerNames: TStringList;
-  ErrorHandlerClasses: TClassList;
-
 procedure RegisterErrorHandler(const ErrorHandler: TClass);
 begin
   RegisterClass(ErrorHandler, ILogErrorHandler, 'ILogErrorHandler',
@@ -3794,10 +3793,6 @@ begin
     ErrorHandlerClasses) as ILogErrorHandler;
 end;
 
-var
-  FilterNames: TStringList;
-  FilterClasses: TClassList;
-
 procedure RegisterFilter(const Filter: TClass);
 begin
   RegisterClass(Filter, ILogFilter, 'ILogFilter', FilterNames, FilterClasses);
@@ -3809,9 +3804,6 @@ begin
     as ILogFilter;
 end;
 
-var
-  LayoutNames: TStringList;
-  LayoutClasses: TClassList;
 
 procedure RegisterLayout(const Layout: TClass);
 begin
@@ -3823,10 +3815,6 @@ begin
   Result := FindClass(ClassName, ILogLayout, LayoutNames, LayoutClasses)
     as ILogLayout;
 end;
-
-var
-  RenderedNames: TStringList;
-  RenderedClasses: TClassList;
 
 { Register a class to be rendered. }
 procedure RegisterRendered(const Rendered: TClass);
@@ -3861,10 +3849,6 @@ begin
     Result := RenderedClasses[Index];
 {$ENDIF}
 end;
-
-var
-  RendererNames: TStringList;
-  RendererClasses: TClassList;
 
 procedure RegisterRenderer(const Renderer: TClass);
 begin
@@ -3902,15 +3886,9 @@ begin
 end;
 
 initialization
-  { Timestamping. }
   StartTime := Now;
-  { Synchronisation. }
   InitCriticalSection(CriticalNDC);
-  { Standard levels. }
   Levels             := TObjectList.Create;
-{$IFDEF DELPHI5_UP}
-  Levels.OwnsObjects := True;
-{$ENDIF}
   All   := TLogLevel.Create('all',   AllValue);
   Trace := TLogLevel.Create('trace', TraceValue);
   Debug := TLogLevel.Create('debug', DebugValue);
@@ -3919,10 +3897,8 @@ initialization
   Error := TLogLevel.Create('error', ErrorValue);
   Fatal := TLogLevel.Create('fatal', FatalValue);
   Off   := TLogLevel.Create('off',   OffValue);
-  { NDC stack. }
   NDC        := TStringList.Create;
   NDC.Sorted := True;
-  { Registration setup. }
   AppenderNames        := TStringList.Create;
   AppenderClasses      := TClassList.Create;
   ErrorHandlerNames    := TStringList.Create;
@@ -3937,7 +3913,6 @@ initialization
   RenderedClasses      := TClassList.Create;
   RendererNames        := TStringList.Create;
   RendererClasses      := TClassList.Create;
-  { Registration of standard implementations. }
   RegisterLoggerFactory(TLogDefaultLoggerFactory);
   RegisterErrorHandler(TLogFallbackErrorHandler);
   RegisterErrorHandler(TLogOnlyOnceErrorHandler);
@@ -3953,22 +3928,15 @@ initialization
   RegisterAppender(TLogODSAppender);
   RegisterAppender(TLogStreamAppender);
   RegisterAppender(TLogRollingFileAppender);
-  { Standard logger factory and hierarchy. }
   DefaultLoggerFactory := TLogDefaultLOggerFactory.Create;
   DefaultLoggerFactory._AddRef;
   DefaultHierarchy     := TLogHierarchy.Create(TLogRoot.Create(Error));
-  { Internal logging }
   LogLog           := TLogLog.Create;
   LogLog.Hierarchy := DefaultHierarchy;
 finalization
-
-{$IFDEF DELPHI4}
-  LevelFree;
-{$ENDIF}
   Levels.Free;
   DefaultLoggerFactory._Release;
   DefaultHierarchy.Free;
-  { Registration cleanup. }
   AppenderNames.Free;
   AppenderClasses.Free;
   ErrorHandlerNames.Free;
@@ -3983,11 +3951,8 @@ finalization
   RenderedClasses.Free;
   RendererNames.Free;
   RendererClasses.Free;
-  { NDC. }
   NDCFree;
-  { Internal logging. }
   LogLog.Free;
-  { Synchronisation. }
   LeaveCriticalSection(CriticalNDC);
 
-end.
+end.
