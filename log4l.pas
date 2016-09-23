@@ -12,6 +12,7 @@ unit log4l;
   Forked and ported to Lazarus by Cynic (CynicRus@gmail.com)
   Version 1.0 for Lazarus - 16 January 2013 by Cynic
   Version 1.1 for Lazarus - 27 June 2013 by Cynic
+  Version 1.2 for Lazarus - 21 September 2016 by DPS
 
   changes by adasen:
   - added threshold option to TLogCustomAppender (as in SkeletonAppender.java)
@@ -24,6 +25,10 @@ unit log4l;
   changes by Cynic
   - a lot fixes and many other.
   - fixed write header in the file appender
+  changes by DPS
+  - fixed memory leak
+  - fixed critical section finalization
+  - added exception trace stack
 
 }
 {$mode Delphi}
@@ -34,7 +39,7 @@ uses
   Classes,SysUtils,SyncObjs, Contnrs;
 
 const
-  l4lVersion = '1.1';
+  l4lVersion = '1.2';
 
   { Default pattern string for log output.
     Shows the application supplied message. }
@@ -218,6 +223,9 @@ type
   TLogLogger = class;
 
   { An event to be logged. }
+
+  { TLogEvent }
+
   TLogEvent = class(TPersistent)
   private
     FError: Exception;
@@ -228,9 +236,10 @@ type
     function GetElapsedTime: LongInt;
     function GetErrorClass: string;
     function GetErrorMessage: string;
+    function GetErrorTrace: string;
     function GetLoggerName: string;
     function GetNDC: string;
-    function GetThreadId: LongInt;
+    function GetThreadId: PtrUInt;
   public
     constructor Create(const Logger: TLogLogger;
       const Level: TLogLevel; const Message: string;
@@ -242,11 +251,12 @@ type
     property Error: Exception read FError;
     property ErrorClass: string read GetErrorClass;
     property ErrorMessage: string read GetErrorMessage;
+    property ErrorTrace: string read GetErrorTrace;
     property Level: TLogLevel read FLevel;
     property LoggerName: string read GetLoggerName;
     property Message: string read FMessage;
     property NDC: string read GetNDC;
-    property ThreadId: LongInt read GetThreadId;
+    property ThreadId: PtrUInt read GetThreadId;
     property TimeStamp: TDateTime read FTimeStamp;
   end;
 
@@ -860,9 +870,7 @@ type
     procedure SetLogFile(const Name: string); virtual;
     procedure CloseLogFile; virtual;
   public
-    constructor Create(const Name, FileName: string;
-      const Layout: ILogLayout = nil; const Append: Boolean = True);
-      reintroduce; virtual;
+    constructor Create(const Name, FileName: string; const Layout: ILogLayout = nil; const Append: Boolean = True); reintroduce; virtual;
     property FileName: TFileName read FFileName;
     property OpenAppend: Boolean read FAppend;
   end;
@@ -1049,7 +1057,7 @@ uses
 {$ENDIF UNICODE}
 
 const
-  CRLF = #13#10;
+  CRLF = LineEnding;
   MilliSecsPerDay = 24 * 60 * 60 * 1000;
 
 resourcestring
@@ -1101,7 +1109,6 @@ resourcestring
   ThreadHdr               = 'Thread';
   TimeHdr                 = 'Time';
   ValueUnknownMsg         = 'Unknown';
-
 
 { TLogOptionHandler -----------------------------------------------------------}
 
@@ -1281,7 +1288,7 @@ end;
 { Return the current thread id as a string. }
 class function TLogNDC.GetThreadId: string;
 begin
-  Result := IntToStr(GetCurrentThreadId);
+  Result := IntToStr(PtrUInt(GetCurrentThreadId));
 end;
 
 { Use the provided context for this NDC. }
@@ -1457,6 +1464,23 @@ begin
     Result := '';
 end;
 
+function TLogEvent.GetErrorTrace: string;
+  var
+    I: Integer;
+    Frames: PPointer;
+    Report: string;
+begin
+  if Error <> nil then
+    begin
+      Result := ErrorMessage + LineEnding + BackTraceStrFunc(ExceptAddr);
+      Frames := ExceptFrames;
+      for I := 0 to ExceptFrameCount - 1 do
+        Result := Result + LineEnding + BackTraceStrFunc(Frames[I]);
+    end
+  else
+    Result := '';
+end;
+
 { Return the name of the logger. }
 function TLogEvent.GetLoggerName: string;
 begin
@@ -1470,9 +1494,9 @@ begin
 end;
 
 { Return the current thread ID. }
-function TLogEvent.GetThreadId: LongInt;
+function TLogEvent.GetThreadId: PtrUInt;
 begin
-  Result := GetCurrentThreadId;
+  Result := PtrUInt(GetCurrentThreadId);
 end;
 
 { TLogDefaultLoggerFactory ----------------------------------------------------}
@@ -1497,7 +1521,7 @@ end;
 destructor TLogLogger.Destroy;
 begin
   FAppenders.Free;
-  LeaveCriticalSection(FCriticalLogger);
+  DoneCriticalsection(FCriticalLogger);
   inherited Destroy;
 end;
 
@@ -1841,9 +1865,11 @@ end;
 
 { Initialise internal logging - send it to debugging output. }
 constructor TLogLog.Create;
+var appender : ILogAppender;
 begin
   inherited Create('');
-  AddAppender(TLogODSAppender.Create(''));
+  appender:=TLogODSAppender.Create('');
+  AddAppender(appender);
   InternalDebugging := False;
   Level             := log4l.Debug;
 end;
@@ -1891,7 +1917,7 @@ begin
     FRoot.Free;
   FRenderedClasses.Free;
   FRenderers.Free;
-  LeaveCriticalSection(FCriticalHierarchy);
+  DoneCriticalSection(FCriticalHierarchy);
   inherited Destroy;
 end;
 
@@ -2272,15 +2298,15 @@ end;
 { TLogPatternLayout -----------------------------------------------------------}
 
 type
-  TPatternPart = (ppText, ppLogger, ppClassName, ppDate, ppException,
+  TPatternPart = (ppText, ppLogger, ppClassName, ppDate, ppException, ppExceptionTrace,
     ppFileName, ppLocation, ppLine, ppMessage, ppMethod, ppNewLine,
     ppLevel, ppRuntime, ppThread, ppNDC, ppPercent);
 
 const
   { These characters identify the types above. }
-  PatternChars        = ' cCdeFlLmMnprtx%';
+  PatternChars        = ' cCdeEFlLmMnprtx%';
   { These characters substitute for those above in the processed format. }
-  PatternReplacements = ' ssssssdssssddss';
+  PatternReplacements = ' sssssssdssssddss';
 
 constructor TLogPatternLayout.Create(const Pattern: string);
 begin
@@ -2299,6 +2325,7 @@ end;
   c - Logger name, e.g. myapp.more
   C - Class name of caller - not implemented
   e - Message and class name from the exception associated with the event
+  E - Stack trace for exception associated with the event
   d - Current date and time, using date format set as option
   F - File name of calling class - not implemented
   l - Name and location within calling method - not implemented
@@ -2330,6 +2357,8 @@ begin
       ppDate:      Result := Result + FormatDateTime(DateFormat, Now);
       ppException: Result := Result +
         SysUtils.Format(FPatternParts[Index], [Event.ErrorMessage]);
+      ppExceptionTrace: Result:=Result +
+        SysUtils.Format(FPatternParts[Index], [Event.ErrorTrace]);
       ppFileName:  Result := Result +
         SysUtils.Format(FPatternParts[Index], [ValueUnknownMsg]);
       ppLocation:  Result := Result +
@@ -2342,7 +2371,7 @@ begin
         SysUtils.Format(FPatternParts[Index], [ValueUnknownMsg]);
       ppNewLine:   Result := Result + CRLF;
       ppLevel:  Result := Result +
-        SysUtils.Format(FPatternParts[Index], [Event.Level.Name]);
+        SysUtils.Format(FPatternParts[Index], [UpperCase(Event.Level.Name)]);
       ppRuntime:   Result := Result + SysUtils.Format(FPatternParts[Index],
         [Event.ElapsedTime]);
       ppThread:    Result := Result +
@@ -2351,6 +2380,7 @@ begin
         SysUtils.Format(FPatternParts[Index], [Event.NDC]);
       ppPercent:   Result := Result + '%';
     end;
+  Result := Result + CRLF;
 end;
 
 procedure TLogPatternLayout.Init;
@@ -2637,7 +2667,7 @@ constructor TLogCustomAppender.Create(const Name: string;
   const Layout: ILogLayout);
 begin
   inherited Create;
-//  InitCriticalSection(FCriticalAppender);
+  InitCriticalSection(FCriticalAppender);
   FName := Name;
   if Layout <> nil then
     FLayout := Layout
@@ -2650,7 +2680,7 @@ destructor TLogCustomAppender.Destroy;
 begin
   Close;
   FFilters.Free;
-//  LeaveCriticalSection(FCriticalAppender);
+  DoneCriticalSection(FCriticalAppender);
   inherited Destroy;
 end;
 
@@ -2761,7 +2791,6 @@ end;
 procedure TLogCustomAppender.Init;
 begin
   inherited Init;
-  InitCriticalSection(FCriticalAppender);
   FClosed       := False;
   FErrorHandler := TLogOnlyOnceErrorHandler.Create;
   FFilters      := TInterfaceList.Create;
@@ -3933,6 +3962,7 @@ initialization
   DefaultHierarchy     := TLogHierarchy.Create(TLogRoot.Create(Error));
   LogLog           := TLogLog.Create;
   LogLog.Hierarchy := DefaultHierarchy;
+
 finalization
   Levels.Free;
   DefaultLoggerFactory._Release;
@@ -3953,6 +3983,6 @@ finalization
   RendererClasses.Free;
   NDCFree;
   LogLog.Free;
-  LeaveCriticalSection(CriticalNDC);
+  DoneCriticalSection(CriticalNDC);
 
 end.
